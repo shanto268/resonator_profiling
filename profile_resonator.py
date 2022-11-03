@@ -31,7 +31,7 @@ if __name__ == "__main__":
         os.mkdir(path+figpath)
     lf = Labber.LogFile(path + fname)
 
-    logFileName = path + "profile_info.log"
+    logFileName = path + f"profile_info_{fname[:-4]}log"
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     logger = logging.getLogger()
     logger.addHandler(logging.FileHandler(logFileName, 'a'))
@@ -83,8 +83,8 @@ if __name__ == "__main__":
     plt.show()
 
 
-    print(f"{logFileName} with all the info has been created")
-
+    print(f"\n\nLog File: {logFileName}")
+    print(f"\nPlots Directory: {path + figpath}")
 
 
 
