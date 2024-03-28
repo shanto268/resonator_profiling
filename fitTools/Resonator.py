@@ -6,7 +6,6 @@ type resonators. If desired, one can use high snr data to first calibrate the ov
 The circlefit method is adapted from Probst et al. 'Efficient and robust analysis of complex scattering data under noise in microwave resonators' (2015)
 
 """
-
 from utilities import plotting, save_load, Watt2dBm, dBm2Watt
 from circlefit import circlefit
 from calibration import calibration
