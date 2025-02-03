@@ -9,13 +9,15 @@ __author__ =  ["Sadman Ahmed Shanto"]
 __date__ = "05/12/2023"
 __email__ = "shanto@usc.edu"
 
+import logging
+import os
+
 #libraries used
 import Labber
-import numpy as np
-import os
 import matplotlib.pyplot as plt
+import numpy as np
+
 from fitTools.Resonator import Resonator
-import logging
 
 if __name__ == "__main__":
     plt.rcParams.update({'font.size':14})
@@ -38,10 +40,9 @@ if __name__ == "__main__":
     print = logger.info
 
     nEntries = lf.getNumberOfEntries()
-    try:
-        power = np.squeeze(np.round(lf.getData(name='Agilent Network Analyzer - Output power'),decimals=2))
-    except:
-        power = np.squeeze(np.round(lf.getData(name='VNA - Output power'),decimals=2))
+    power_channel_name = lf.getStepChannels()[0]["name"]
+    power_range = len(lf.getStepChannels()[0]["values"])
+    power = np.squeeze(np.round(lf.getData(name = power_channel_name),decimals=2))
 
 
     fits = {'f':[],'Q':[],'Qint':[],'Qext':[]}

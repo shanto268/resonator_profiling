@@ -9,13 +9,15 @@ __author__ =  ["James Farmer", "Sadman Ahmed Shanto"]
 __date__ = "10/28/2022"
 __email__ = "shanto@usc.edu"
 
+import logging
+import os
+
 #libraries used
 import Labber
-import numpy as np
-import os
 import matplotlib.pyplot as plt
+import numpy as np
+
 from fitTools.Resonator import Resonator
-import logging
 
 if __name__ == "__main__":
     plt.rcParams.update({'font.size':14})
@@ -38,10 +40,13 @@ if __name__ == "__main__":
     print = logger.info
 
     nEntries = lf.getNumberOfEntries()
-    try:
-        power = np.squeeze(np.round(lf.getData(name='Agilent Network Analyzer - Output power'),decimals=2))
-    except:
-        power = np.squeeze(np.round(lf.getData(name='VNA - Output power'),decimals=2))
+    power_channel_name = lf.getStepChannels()[0]["name"]
+    power_range = len(lf.getStepChannels()[0]["values"])
+    freq_channel_name = lf.getStepChannels()[1]["name"]
+    freq_range = len(lf.getStepChannels()[1]["values"])
+    vna_power = lf.getData(name = power_channel_name)
+    freq_channel_name = lf.getStepChannels()[1]["name"]
+    res_freq = lf.getData(name = freq_channel_name)
 
 
     fits = {'f':[],'Q':[],'Qint':[],'Qext':[]}
@@ -56,13 +61,13 @@ if __name__ == "__main__":
 
         if res.fit_found:
             print(20*"=")
-            res.show(savefile = path+figpath+fname[:-4]+'resonance_{}-dBm.png'.format(power[n]))
-            print('\nFit at {} dBm'.format(power[n]))
+            res.show(savefile = path+figpath+fname[:-4]+'resonance_{}-dBm.png'.format(vna_power[n]))
+            print('\nFit at {} dBm'.format(vna_power[n]))
             print(res)
             print(20*"="+"\n")
 
     fig = plt.figure(figsize=[9,6],constrained_layout=True)
-    plt.plot(power,fits['f'],'r.')
+    plt.plot(vna_power,fits['f'],'r.')
     plt.title('Frequency vs power')
     plt.xlabel('VNA Power [dBm]')
     #plt.xlabel('LO attenuation [dB]')
@@ -71,9 +76,9 @@ if __name__ == "__main__":
     plt.show()
 
     fig = plt.figure(figsize=[9,6],constrained_layout=True)
-    plt.scatter(power,fits['Q'],s=20,c='r',label='Total Q')
-    plt.scatter(power,fits['Qint'],s=20,c='b',label='Internal Q')
-    plt.scatter(power,fits['Qext'],s=20,c='g',label='external Q')
+    plt.scatter(vna_power,fits['Q'],s=20,c='r',label='Total Q')
+    plt.scatter(vna_power,fits['Qint'],s=20,c='b',label='Internal Q')
+    plt.scatter(vna_power,fits['Qext'],s=20,c='g',label='external Q')
     plt.title('Q vs power')
     plt.xlabel('VNA Power [dBm]')
     #plt.xlabel('LO attenuation [dB]')
