@@ -1,74 +1,38 @@
-    # network.write_touchstone('cpw_line.s2p')
 import numpy as np
 import skrf as rf
 
-def calculate_cpw_scattering_matrix(
+def calculate_cpw_resonator_scattering_matrix(
     length: float,
     frequency: float,
-    center_width: float = 10e-6,
-    gap_width: float = 6e-6,
-    thickness: float = 200e-9,
-    epsilon_r: float = 11.7,
-    london_depth: float = 150e-9,
-    temperature: float = 1.5,
-    critical_temp: float = 9.2,
+    center_width: float = 3.42e-6,
+    gap_width: float = 2.43e-6,
+    thickness: float = 100e-9,
+    epsilon_r: float = 11.45,
+    london_depth: float = 16e-9,
+    temperature: float = 0.02,
+    critical_temp: float = 1.2,
     z0_port: float = 50.0,
-    loss_tangent: float = 1e-6,
-    Q_factor: float = 1e6
+    resonator_type: str = 'quarter_wave',
+    Q_int: float = 1e6,
+    Q_ext: float = 1e4
 ):
-    """
-    Calculate the scattering matrix for a superconducting CPW transmission line.
-    
-    Parameters:
-    -----------
-    length : float
-        Length of the transmission line (m)
-    frequency : float or array-like
-        Operating frequency (Hz) - can be scalar or array
-    center_width : float
-        Width of center conductor (m)
-    gap_width : float
-        Gap width between center and ground (m)
-    thickness : float
-        Superconductor film thickness (m)
-    epsilon_r : float
-        Relative permittivity of substrate
-    london_depth : float
-        London penetration depth at T=0 (m)
-    temperature : float
-        Operating temperature (K)
-    critical_temp : float
-        Critical temperature of superconductor (K)
-    z0_port : float
-        Port impedance (Ohms)
-    loss_tangent : float
-        Dielectric loss tangent
-    Q_factor : float
-        Quality factor for conductor losses
-    
-    Returns:
-    --------
-    skrf.Network
-        Network object containing S-parameters
-    """
-    
     # Physical constants
-    c = 2.998e8  # Speed of light (m/s)
-    mu0 = 4 * np.pi * 1e-7  # Permeability of free space
-    epsilon0 = 8.854e-12  # Permittivity of free space
+    c = 2.998e8
+    mu0 = 4 * np.pi * 1e-7
+    epsilon0 = 8.854e-12
     
-    # Convert frequency to array if scalar
+    # Convert frequency to array
     freq_array = np.atleast_1d(frequency)
     num_freqs = len(freq_array)
     
     # Initialize S-parameter array
     s_matrix = np.zeros((num_freqs, 2, 2), dtype=complex)
     
-    # Calculate CPW geometry factors
+    # CPW geometry factors
     k = center_width / (center_width + 2 * gap_width)
     k_prime = np.sqrt(1 - k**2)
     
-    # Complete elliptic integrals approximation
+    # Elliptic integrals
     if k <= 0.707:
         K_k = np.pi / np.log(2 * (1 + np.sqrt(k_prime)) / (1 - np.sqrt(k_prime)))
         K_k_prime = np.log(2 * (1 + np.sqrt(k)) / (1 - np.sqrt(k))) / np.pi
@@ -76,209 +40,155 @@ def calculate_cpw_scattering_matrix(
         K_k = np.log(2 * (1 + np.sqrt(k_prime)) / (1 - np.sqrt(k_prime))) / np.pi
         K_k_prime = np.pi / np.log(2 * (1 + np.sqrt(k)) / (1 - np.sqrt(k)))
     
-    # Effective permittivity for CPW on substrate
-    # Using weighted average based on field distribution
+    # Effective permittivity
     epsilon_eff = 1 + 0.5 * (epsilon_r - 1) * (K_k_prime / K_k) / (K_k_prime / K_k + 1)
     
-    # Temperature-dependent London penetration depth
-    if temperature < critical_temp:
-        lambda_t = london_depth / np.sqrt(1 - (temperature / critical_temp)**4)
-    else:
-        lambda_t = london_depth * 10  # Non-superconducting state
+    # Temperature-dependent London depth
+    lambda_t = london_depth / np.sqrt(1 - (temperature / critical_temp)**4)
     
-    # Geometric inductance per unit length for CPW
+    # Inductance per unit length
     L_geometric = (mu0 / 4) * (K_k_prime / K_k)
-    
-    # Kinetic inductance per unit length
-    # For thin film superconductor in CPW geometry
     if thickness < lambda_t:
-        # Thin film limit - kinetic inductance is significant
         L_kinetic = (mu0 * lambda_t / thickness) * (K_k_prime / K_k) / (4 * K_k * K_k_prime)
     else:
-        # Thick film limit
         L_kinetic = (mu0 / 2) * (K_k_prime / K_k) / (4 * K_k * K_k_prime)
-    
-    # Total inductance per unit length
     L_total = L_geometric + L_kinetic
     
-    # Capacitance per unit length for CPW
+    # Capacitance per unit length
     C = 4 * epsilon0 * epsilon_eff * (K_k / K_k_prime)
-    
-    # Characteristic impedance (lossless approximation)
-    Z0 = np.sqrt(L_total / C)
     
     # Phase velocity
     vp = 1 / np.sqrt(L_total * C)
     
+    # Calculate resonant frequencies
+    if resonator_type == 'quarter_wave':
+        f0 = vp / (4 * length)
+        harmonics = [(2*n - 1) * f0 for n in range(1, 6)]  # f0, 3f0, 5f0...
+    else:
+        f0 = vp / (2 * length)
+        harmonics = [n * f0 for n in range(1, 6)]  # f0, 2f0, 3f0...
+    
     # Calculate S-parameters for each frequency
     for i, freq in enumerate(freq_array):
-        omega = 2 * np.pi * freq
+        # Start with unity transmission
+        S21 = 1.0 + 0j
+        S11 = 0.0 + 0j
         
-        # Wavelength in the transmission line
-        wavelength = vp / freq
-        beta = 2 * np.pi / wavelength  # Phase constant
-        
-        # Attenuation constant (very small for superconductors)
-        # Conductor losses through Q factor
-        alpha_c = beta / (2 * Q_factor)
-        
-        # Dielectric losses
-        alpha_d = (beta * loss_tangent) / 2
-        
-        # Total attenuation
-        alpha = alpha_c + alpha_d
-        
-        # Propagation constant
-        gamma = alpha + 1j * beta
-        
-        # Calculate transmission line parameters
-        gamma_l = gamma * length
-        
-        # For numerical stability, check the magnitude
-        if np.abs(gamma_l.real) > 20:
-            # Very high loss - use approximation
-            S11 = 1.0 + 0j
-            S12 = 0.0 + 0j
-            S21 = 0.0 + 0j
-            S22 = 1.0 + 0j
-        else:
-            # Calculate S-parameters using impedance mismatch formulation
-            # Reflection coefficient at the ports
-            Gamma = (Z0 - z0_port) / (Z0 + z0_port)
+        # Add resonance dips for each harmonic
+        for f_res in harmonics:
+            # Total Q and coupling parameter
+            Q_total = 1 / (1/Q_int + 1/Q_ext)
             
-            # Transmission coefficient
-            T = np.exp(-gamma_l)
+            # Lorentzian resonance response for notch filter
+            denominator = 1 + 2j * Q_total * (freq - f_res) / f_res
             
-            # S-parameters for matched or nearly matched line
-            denominator = 1 - Gamma**2 * T**2
+            # Coupling factor (beta = Q_total/Q_ext)
+            beta = Q_total / Q_ext
             
-            S11 = Gamma * (1 - T**2) / denominator
-            S21 = T * (1 - Gamma**2) / denominator
-            S12 = S21  # Reciprocal network
-            S22 = S11  # Symmetric network
+            # Notch filter transmission (dip at resonance)
+            # For critically coupled (beta = 1): complete dip
+            # For undercoupled (beta < 1): partial dip
+            S21_resonance = (1 + 2j * Q_total * (freq - f_res) / f_res - beta) / denominator
+            
+            # Multiply by this resonance response
+            S21 = S21 * S21_resonance
+            
+            # Small reflection at resonance
+            S11 = S11 - beta / denominator * 0.05
+        
+        # Ensure reciprocity
+        S12 = S21
+        S22 = S11
         
         # Store in S-matrix
         s_matrix[i] = np.array([[S11, S12],
                                 [S21, S22]])
     
-    # Create frequency object for skrf (convert to GHz)
+    # Create frequency object for skrf
     freq_ghz = rf.Frequency.from_f(freq_array / 1e9, unit='ghz')
     
-    # Create and return Network object
+    # Create Network object
     network = rf.Network(frequency=freq_ghz, s=s_matrix, z0=z0_port)
+    network.f0 = f0 / 1e9
+    network.harmonics = [f/1e9 for f in harmonics]
     
     return network
-
-
-def calculate_cpw_network(
-    length: float,
-    freq_start: float,
-    freq_stop: float,
-    num_points: int = 201,
-    **kwargs
-):
-    """
-    Calculate S-parameters over a frequency range and return as skrf Network.
-    
-    Parameters:
-    -----------
-    length : float
-        Length of transmission line (m)
-    freq_start : float
-        Start frequency (Hz)
-    freq_stop : float
-        Stop frequency (Hz)
-    num_points : int
-        Number of frequency points
-    **kwargs : additional parameters passed to calculate_cpw_scattering_matrix
-    
-    Returns:
-    --------
-    skrf.Network
-        Network object with S-parameters over frequency range
-    """
-    
-    frequencies = np.linspace(freq_start, freq_stop, num_points)
-    return calculate_cpw_scattering_matrix(length, frequencies, **kwargs)
 
 
 # Example usage
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     
-    # Example 1: Single frequency
-    length = 10e-3  # 10 mm
-    frequency = 5e9  # 5 GHz
+    # Your resonator dimensions
+    length = 4.2e-3
+    center_width = 3.42e-6
+    gap_width = 2.43e-6
     
-    network_single = calculate_cpw_scattering_matrix(
-        length=length, 
-        frequency=frequency, 
-        temperature=1.5,
-        Q_factor=1e6  # High Q for superconductor
-    )
+    # Wide frequency sweep
+    frequencies = np.linspace(1e9, 25e9, 2401)
     
-    print("Single frequency network:")
-    print(f"Frequency: {network_single.frequency.f_scaled[0]:.2f} GHz")
-    print(f"S11 = {network_single.s[0,0,0]:.4f}")
-    print(f"S21 = {network_single.s[0,1,0]:.4f}")
-    print(f"|S11| = {20*np.log10(np.abs(network_single.s[0,0,0])):.2f} dB")
-    print(f"|S21| = {20*np.log10(np.abs(network_single.s[0,1,0])):.2f} dB")
-    
-    # Example 2: Frequency sweep
-    frequencies = np.linspace(1e9, 10e9, 101)  # 1-10 GHz
-    
-    network = calculate_cpw_scattering_matrix(
-        length=10e-3,
+    network = calculate_cpw_resonator_scattering_matrix(
+        length=length,
         frequency=frequencies,
-        temperature=1.5,
-        center_width=10e-6,
-        gap_width=6e-6,
-        epsilon_r=11.7,
-        Q_factor=1e6,
-        z0_port=50.0
+        center_width=center_width,
+        gap_width=gap_width,
+        resonator_type='quarter_wave',
+        Q_int=1e6,
+        Q_ext=1e4
     )
     
-    print(f"\nFrequency sweep network:")
-    print(f"Frequency range: {network.frequency.f_scaled[0]:.2f} - {network.frequency.f_scaled[-1]:.2f} GHz")
-    print(f"Number of points: {len(network.frequency)}")
+    print(f"Fundamental resonance: {network.f0:.3f} GHz")
+    print(f"First 3 harmonics: {[f'{f:.2f}' for f in network.harmonics[:3]]} GHz")
     
-    # Calculate characteristic impedance
-    L_total = 4.5e-7  # Approximate value (H/m)
-    C = 1.5e-10  # Approximate value (F/m)
-    Z0_calc = np.sqrt(L_total / C)
-    print(f"Characteristic impedance: ~{Z0_calc:.1f} Ohms")
-    
-    # Example 3: Using the convenience function
-    network2 = calculate_cpw_network(
-        length=5e-3,
-        freq_start=2e9,
-        freq_stop=8e9,
-        num_points=51,
-        temperature=1.5,
-        Q_factor=5e5
-    )
-    
-    print(f"\nConvenience function network:")
-    print(f"Frequency range: {network2.frequency.f_scaled[0]:.2f} - {network2.frequency.f_scaled[-1]:.2f} GHz")
-    
-    # Check S-parameter magnitudes
+    # Find actual resonance dips
     s21_db = 20 * np.log10(np.abs(network.s[:, 1, 0]))
+    minima_indices = []
+    for i in range(1, len(s21_db)-1):
+        if s21_db[i] < s21_db[i-1] and s21_db[i] < s21_db[i+1] and s21_db[i] < -3:
+            minima_indices.append(i)
+    
+    print(f"\nResonance dips found at:")
+    for idx in minima_indices[:3]:
+        f_res = network.frequency.f_scaled[idx]
+        depth = s21_db[idx]
+        print(f"  {f_res:.3f} GHz ({depth:.1f} dB)")
+    
+    # Plotting
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    
+    # S21 magnitude
+    axes[0,0].plot(network.frequency.f_scaled, s21_db)
+    axes[0,0].set_xlabel('Frequency (GHz)')
+    axes[0,0].set_ylabel('|S21| (dB)')
+    axes[0,0].set_title('Transmission - Multiple Resonances')
+    axes[0,0].grid(True, alpha=0.3)
+    axes[0,0].set_ylim(-30, 5)
+    
+    # S21 phase
+    axes[0,1].plot(network.frequency.f_scaled, np.unwrap(np.angle(network.s[:, 1, 0])) * 180/np.pi)
+    axes[0,1].set_xlabel('Frequency (GHz)')
+    axes[0,1].set_ylabel('Phase S21 (deg)')
+    axes[0,1].set_title('Phase Response')
+    axes[0,1].grid(True, alpha=0.3)
+    
+    # Zoom on fundamental
+    f0_idx = np.argmin(np.abs(network.frequency.f_scaled - network.f0))
+    zoom_range = 200
+    zoom_indices = slice(max(0, f0_idx-zoom_range), min(len(frequencies), f0_idx+zoom_range))
+    
+    axes[1,0].plot(network.frequency.f_scaled[zoom_indices], s21_db[zoom_indices])
+    axes[1,0].set_xlabel('Frequency (GHz)')
+    axes[1,0].set_ylabel('|S21| (dB)')
+    axes[1,0].set_title(f'Zoom on Fundamental (~{network.f0:.2f} GHz)')
+    axes[1,0].grid(True, alpha=0.3)
+    
+    # S11 magnitude
     s11_db = 20 * np.log10(np.abs(network.s[:, 0, 0]))
-    print(f"\nS21 range: {s21_db.min():.2f} to {s21_db.max():.2f} dB")
-    print(f"S11 range: {s11_db.min():.2f} to {s11_db.max():.2f} dB")
-    
-    # Plotting example (commented out, uncomment to use)
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-    
-    network.plot_s_db(m=0, n=0, ax=axes[0,0])  # S11 magnitude
-    axes[0,0].set_ylim(-50, 0)
-    network.plot_s_deg(m=0, n=0, ax=axes[0,1])  # S11 phase
-    
-    network.plot_s_db(m=1, n=0, ax=axes[1,0])  # S21 magnitude  
-    axes[1,0].set_ylim(-3, 0)
-    network.plot_s_deg(m=1, n=0, ax=axes[1,1])  # S21 phase
+    axes[1,1].plot(network.frequency.f_scaled, s11_db)
+    axes[1,1].set_xlabel('Frequency (GHz)')
+    axes[1,1].set_ylabel('|S11| (dB)')
+    axes[1,1].set_title('Reflection')
+    axes[1,1].grid(True, alpha=0.3)
     
     plt.tight_layout()
     plt.show()
-    
-    # Export to touchstone file
