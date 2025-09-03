@@ -39,13 +39,25 @@ def get_component_length(component: gf.Component) -> float:
         # Hierarchical - sum all sub-components
         return sum(get_component_length(inst.cell) for inst in component.insts)
     else:
-        # Base component - use bounding box
-        dbbox = component.dbbox()
+        # Base component
         if 'bend' in component.name.lower():
-            # Arc length for bend (assuming 90-degree)
-            radius = (dbbox.right - dbbox.left) / 2
-            return radius * np.pi / 2
-        return dbbox.right - dbbox.left
+            # For bend_euler, extract radius and angle from component info if available
+            # Default to 90-degree bend with radius=100 if not specified
+            if hasattr(component, 'info') and 'radius' in component.info:
+                radius = component.info['radius']
+                angle = component.info.get('angle', 90)
+            else:
+                # Estimate from name or use default
+                # bend_euler typically has radius in name or use 100 μm default
+                radius = 100  # Default radius
+                angle = 90    # Default angle in degrees
+            
+            # Arc length = radius * angle (in radians)
+            return radius * abs(angle) * np.pi / 180
+        else:
+            # Straight component - use bounding box width
+            dbbox = component.dbbox()
+            return dbbox.right - dbbox.left
 
 
 def extract_cpw_dims(cross_section: Any) -> Tuple[float, float]:
@@ -294,18 +306,36 @@ def build_cpw_resonator(
     else:
         # Meandered resonator with bend_eulers
         bend_length = radius * np.pi / 2  # 90-degree bend arc length
-        straight_per_meander = pitch - 2 * radius
         
-        if straight_per_meander <= 0:
-            straight_per_meander = pitch / 2
-            
-        n_meanders = max(1, int(length / (straight_per_meander + 2 * bend_length)))
+        # Calculate how to achieve target length with meanders
+        # Each meander unit has: straight + 2 bends + connecting straight (except last)
+        # Total = n * straight_length + (n-1) * (2 * bend_length + connect_length)
+        
+        connect_length = pitch / 10  # Short connecting piece
+        
+        # Start with a reasonable number of meanders
+        n_meanders = max(2, int(length / pitch))
+        
+        # Calculate straight length needed per meander to achieve target
+        if n_meanders > 1:
+            total_bends_length = (n_meanders - 1) * (2 * bend_length + connect_length)
+            total_straight_needed = length - total_bends_length
+            straight_per_meander = total_straight_needed / n_meanders
+        else:
+            straight_per_meander = length
+        
+        # Ensure minimum viable straight length
+        if straight_per_meander < 10:
+            # Reduce number of meanders if straights would be too short
+            n_meanders = max(1, int(length / (10 + 2 * bend_length + connect_length)))
+            total_bends_length = (n_meanders - 1) * (2 * bend_length + connect_length) if n_meanders > 1 else 0
+            total_straight_needed = length - total_bends_length
+            straight_per_meander = max(10, total_straight_needed / n_meanders)
         
         components = []
         for i in range(n_meanders):
             # Straight section
-            straight_length = max(10, straight_per_meander)
-            straight = gf.components.straight(length=straight_length)
+            straight = gf.components.straight(length=straight_per_meander)
             components.append(straight)
             
             if i < n_meanders - 1:
@@ -314,7 +344,7 @@ def build_cpw_resonator(
                 components.append(bend1)
                 
                 # Short connecting straight
-                connect = gf.components.straight(length=pitch/10)
+                connect = gf.components.straight(length=connect_length)
                 components.append(connect)
                 
                 bend2 = gf.components.bend_euler(radius=radius, angle=90)
@@ -350,36 +380,51 @@ def build_hierarchical_resonator(
     base_length: float = 1250,
     n_sections: int = 4,
     use_bends: bool = False,
-    radius: float = 100
+    radius: float = 100,
+    total_length: float = None
 ) -> gf.Component:
     """
     Build hierarchical resonator structure.
     
     Args:
-        base_length: Length of each base section in μm
+        base_length: Length of each base section in μm (ignored if total_length specified with bends)
         n_sections: Number of sections to cascade
         use_bends: Whether to include bends
         radius: Bend radius if using bends
+        total_length: Target total electrical length (adjusts base_length for bends)
     """
     c = gf.Component()
     
+    # Calculate adjusted lengths if using bends with total_length target
+    if use_bends and total_length is not None:
+        # Calculate total bend length
+        n_bends = (n_sections - 1) * 2  # Two 90-degree bends per S-bend
+        bend_length_per = radius * np.pi / 2  # Arc length of 90-degree bend
+        total_bend_length = n_bends * bend_length_per
+        
+        # Adjust straight sections to achieve target total length
+        total_straight_needed = total_length - total_bend_length
+        base_length = total_straight_needed / n_sections
+        
+        # Ensure positive length
+        if base_length <= 0:
+            base_length = 10  # Minimum viable length
+    
     components = []
     for i in range(n_sections):
+        # Add straight section
+        straight = gf.components.straight(length=base_length)
+        components.append(straight)
+        
+        # Add S-bend between sections (except after last)
         if use_bends and i < n_sections - 1:
-            # Add straight
-            straight = gf.components.straight(length=base_length)
-            components.append(straight)
-            # Add S-bend
+            # S-bend using two opposing 90-degree bends
             bend1 = gf.components.bend_euler(radius=radius, angle=90)
             components.append(bend1)
             bend2 = gf.components.bend_euler(radius=radius, angle=-90)
             components.append(bend2)
-        else:
-            # Just straight
-            straight = gf.components.straight(length=base_length)
-            components.append(straight)
     
-    # Connect all
+    # Connect all components
     prev_ref = None
     for comp in components:
         ref = c.add_ref(comp)
@@ -717,11 +762,27 @@ if __name__ == "__main__":
     
     # Create flat and hierarchical resonators with same total length
     total_length = 5000  # μm
-    flat_resonator = build_cpw_resonator(length=total_length, meander=True)
-    hier_resonator = build_hierarchical_resonator(base_length=1250, n_sections=4, use_bends=True)
     
-    print(f"   Flat: 1×{total_length} μm")
-    print(f"   Hierarchical: 4×1250 μm = {total_length} μm")
+    # Test both with and without bends
+    use_bends_test = True  # Can be set to False for straight comparison
+    
+    if use_bends_test:
+        # Both use bends/meanders with matched total length
+        flat_resonator = build_cpw_resonator(length=total_length, meander=False)  # Simple straight for now
+        hier_resonator = build_hierarchical_resonator(
+            base_length=1250, n_sections=4, use_bends=True, 
+            total_length=total_length  # Compensate for bend lengths
+        )
+        print(f"   Flat (straight): {total_length} μm")
+        print(f"   Hierarchical (with bends): {total_length} μm total electrical length")
+    else:
+        # Both use simple straights
+        flat_resonator = build_cpw_resonator(length=total_length, meander=False)
+        hier_resonator = build_hierarchical_resonator(
+            base_length=1250, n_sections=4, use_bends=False
+        )
+        print(f"   Flat (straight): {total_length} μm")
+        print(f"   Hierarchical (4×1250 straight): {total_length} μm")
     
     # Simulate both as resonators
     freq_comp = rf.Frequency(5.5, 6.5, 201, 'GHz')
