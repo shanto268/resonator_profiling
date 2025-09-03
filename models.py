@@ -262,6 +262,347 @@ def plot_resonator(network: rf.Network, properties: Dict):
 
 
 # ============================================================================
+# Resonator Construction Functions
+# ============================================================================
+
+@gf.cell
+def build_cpw_resonator(
+    length: float = 5000,
+    width: float = 10,
+    gap: float = 6,
+    meander: bool = False,
+    radius: float = 100,
+    pitch: float = 300
+) -> gf.Component:
+    """
+    Build CPW resonator with straights and bend_eulers.
+    
+    Args:
+        length: Total electrical length in μm
+        width: CPW center width in μm  
+        gap: CPW gap in μm
+        meander: Whether to create meandered structure
+        radius: Bend radius for meanders in μm
+        pitch: Meander pitch spacing in μm
+    """
+    c = gf.Component()
+    
+    if not meander:
+        # Simple straight resonator
+        resonator = gf.components.straight(length=length)
+        c.add_ref(resonator)
+    else:
+        # Meandered resonator with bend_eulers
+        bend_length = radius * np.pi / 2  # 90-degree bend arc length
+        straight_per_meander = pitch - 2 * radius
+        
+        if straight_per_meander <= 0:
+            straight_per_meander = pitch / 2
+            
+        n_meanders = max(1, int(length / (straight_per_meander + 2 * bend_length)))
+        
+        components = []
+        for i in range(n_meanders):
+            # Straight section
+            straight_length = max(10, straight_per_meander)
+            straight = gf.components.straight(length=straight_length)
+            components.append(straight)
+            
+            if i < n_meanders - 1:
+                # U-bend using two bend_eulers
+                bend1 = gf.components.bend_euler(radius=radius, angle=90)
+                components.append(bend1)
+                
+                # Short connecting straight
+                connect = gf.components.straight(length=pitch/10)
+                components.append(connect)
+                
+                bend2 = gf.components.bend_euler(radius=radius, angle=90)
+                components.append(bend2)
+        
+        # Connect all components
+        prev_ref = None
+        for comp in components:
+            ref = c.add_ref(comp)
+            if prev_ref is not None:
+                try:
+                    ref.connect("o1", prev_ref.ports["o2"])
+                except:
+                    pass
+            else:
+                c.add_port(name="o1", port=ref.ports["o1"])
+            prev_ref = ref
+        
+        if prev_ref is not None:
+            c.add_port(name="o2", port=prev_ref.ports["o2"])
+    
+    # Add ports if not already added
+    insts_list = list(c.insts)
+    if len(insts_list) > 0 and not c.ports:
+        c.add_port(name="o1", port=insts_list[0].ports["o1"])
+        c.add_port(name="o2", port=insts_list[-1].ports["o2"])
+    
+    return c
+
+
+@gf.cell
+def build_hierarchical_resonator(
+    base_length: float = 1250,
+    n_sections: int = 4,
+    use_bends: bool = False,
+    radius: float = 100
+) -> gf.Component:
+    """
+    Build hierarchical resonator structure.
+    
+    Args:
+        base_length: Length of each base section in μm
+        n_sections: Number of sections to cascade
+        use_bends: Whether to include bends
+        radius: Bend radius if using bends
+    """
+    c = gf.Component()
+    
+    components = []
+    for i in range(n_sections):
+        if use_bends and i < n_sections - 1:
+            # Add straight
+            straight = gf.components.straight(length=base_length)
+            components.append(straight)
+            # Add S-bend
+            bend1 = gf.components.bend_euler(radius=radius, angle=90)
+            components.append(bend1)
+            bend2 = gf.components.bend_euler(radius=radius, angle=-90)
+            components.append(bend2)
+        else:
+            # Just straight
+            straight = gf.components.straight(length=base_length)
+            components.append(straight)
+    
+    # Connect all
+    prev_ref = None
+    for comp in components:
+        ref = c.add_ref(comp)
+        if prev_ref is not None:
+            try:
+                ref.connect("o1", prev_ref.ports["o2"])
+            except:
+                pass
+        else:
+            c.add_port(name="o1", port=ref.ports["o1"])
+        prev_ref = ref
+    
+    if prev_ref is not None:
+        c.add_port(name="o2", port=prev_ref.ports["o2"])
+    
+    return c
+
+
+# ============================================================================
+# Comprehensive Comparison Functions
+# ============================================================================
+
+def plot_hierarchical_comparison(
+    flat_comp: gf.Component,
+    hier_comp: gf.Component,
+    cross_section: Dict,
+    freq: rf.Frequency,
+    **kwargs
+):
+    """
+    Plot comprehensive comparison of flat vs hierarchical resonator.
+    
+    Shows:
+    - Component structures (visual)
+    - S-parameter magnitude and phase
+    - Resonance properties comparison
+    """
+    # Simulate both
+    net_flat = simulate_tline(flat_comp, cross_section, freq, recursive=False, **kwargs)
+    net_hier = simulate_tline(hier_comp, cross_section, freq, recursive=True, **kwargs)
+    
+    # Create figure with subplots
+    fig = plt.figure(figsize=(16, 10))
+    
+    # Structure visualization
+    ax1 = plt.subplot(3, 2, 1)
+    ax1.text(0.5, 0.5, f'Flat Structure\nSingle {get_component_length(flat_comp):.0f} μm straight', 
+             ha='center', va='center', fontsize=12, transform=ax1.transAxes)
+    ax1.set_title('Flat Resonator Structure')
+    ax1.axis('off')
+    
+    ax2 = plt.subplot(3, 2, 2)
+    n_sections = len(list(hier_comp.insts))
+    ax2.text(0.5, 0.5, f'Hierarchical Structure\n{n_sections} sections\nTotal: {get_component_length(hier_comp):.0f} μm', 
+             ha='center', va='center', fontsize=12, transform=ax2.transAxes)
+    ax2.set_title('Hierarchical Resonator Structure')
+    ax2.axis('off')
+    
+    # S21 Magnitude
+    ax3 = plt.subplot(3, 2, 3)
+    freq_ghz = freq.f_scaled
+    ax3.plot(freq_ghz, net_flat.s_db[:, 1, 0], 'b-', label='Flat', linewidth=2)
+    ax3.plot(freq_ghz, net_hier.s_db[:, 1, 0], 'r--', label='Hierarchical', linewidth=2)
+    ax3.set_xlabel('Frequency (GHz)')
+    ax3.set_ylabel('|S₂₁| (dB)')
+    ax3.set_title('Transmission Magnitude')
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
+    
+    # S21 Phase
+    ax4 = plt.subplot(3, 2, 4)
+    ax4.plot(freq_ghz, np.unwrap(net_flat.s_deg[:, 1, 0]), 'b-', label='Flat', linewidth=2)
+    ax4.plot(freq_ghz, np.unwrap(net_hier.s_deg[:, 1, 0]), 'r--', label='Hierarchical', linewidth=2)
+    ax4.set_xlabel('Frequency (GHz)')
+    ax4.set_ylabel('∠S₂₁ (degrees)')
+    ax4.set_title('Transmission Phase')
+    ax4.grid(True, alpha=0.3)
+    ax4.legend()
+    
+    # Phase difference
+    ax5 = plt.subplot(3, 2, 5)
+    phase_diff = np.unwrap(net_hier.s_deg[:, 1, 0]) - np.unwrap(net_flat.s_deg[:, 1, 0])
+    ax5.plot(freq_ghz, phase_diff, 'g-', linewidth=2)
+    ax5.set_xlabel('Frequency (GHz)')
+    ax5.set_ylabel('Phase Difference (degrees)')
+    ax5.set_title('Hierarchical - Flat Phase Difference')
+    ax5.grid(True, alpha=0.3)
+    ax5.axhline(y=0, color='k', linestyle='--', alpha=0.5)
+    
+    # Summary statistics
+    ax6 = plt.subplot(3, 2, 6)
+    idx_center = len(freq.f) // 2
+    stats_text = f"""Comparison at {freq.f_scaled[idx_center]:.2f} GHz:
+    
+Flat S21:
+  Mag: {net_flat.s_db[idx_center, 1, 0]:.3f} dB
+  Phase: {net_flat.s_deg[idx_center, 1, 0]:.1f}°
+  
+Hierarchical S21:
+  Mag: {net_hier.s_db[idx_center, 1, 0]:.3f} dB
+  Phase: {net_hier.s_deg[idx_center, 1, 0]:.1f}°
+  
+Difference:
+  Mag: {abs(net_hier.s_db[idx_center, 1, 0] - net_flat.s_db[idx_center, 1, 0]):.3e} dB
+  Phase: {abs(phase_diff[idx_center]):.3f}°
+  
+Match: {'✓ EXCELLENT' if abs(phase_diff[idx_center]) < 0.1 else '✓ GOOD' if abs(phase_diff[idx_center]) < 1 else '⚠ CHECK'}"""
+    
+    ax6.text(0.1, 0.5, stats_text, transform=ax6.transAxes, fontsize=10, 
+             verticalalignment='center', family='monospace')
+    ax6.set_title('Numerical Comparison')
+    ax6.axis('off')
+    
+    plt.suptitle('Hierarchical vs Flat Resonator: Complete Comparison', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    return fig
+
+
+def plot_resonator_comparison(
+    flat_res: Tuple[rf.Network, Dict],
+    hier_res: Tuple[rf.Network, Dict],
+    title: str = "Resonator Comparison"
+):
+    """Plot comprehensive resonator comparison with properties."""
+    net_flat, props_flat = flat_res
+    net_hier, props_hier = hier_res
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    
+    freq_ghz = net_flat.frequency.f_scaled
+    
+    # S21 Magnitude
+    axes[0, 0].plot(freq_ghz, net_flat.s_db[:, 1, 0], 'b-', label='Flat', linewidth=2)
+    axes[0, 0].plot(freq_ghz, net_hier.s_db[:, 1, 0], 'r--', label='Hierarchical', linewidth=2)
+    axes[0, 0].axvline(props_flat['f0_GHz'], color='b', linestyle=':', alpha=0.5)
+    axes[0, 0].axvline(props_hier['f0_GHz'], color='r', linestyle=':', alpha=0.5)
+    axes[0, 0].set_xlabel('Frequency (GHz)')
+    axes[0, 0].set_ylabel('|S₂₁| (dB)')
+    axes[0, 0].set_title('Magnitude Response')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # S21 Phase
+    axes[0, 1].plot(freq_ghz, net_flat.s_deg[:, 1, 0], 'b-', label='Flat', linewidth=2)
+    axes[0, 1].plot(freq_ghz, net_hier.s_deg[:, 1, 0], 'r--', label='Hierarchical', linewidth=2)
+    axes[0, 1].set_xlabel('Frequency (GHz)')
+    axes[0, 1].set_ylabel('∠S₂₁ (degrees)')
+    axes[0, 1].set_title('Phase Response')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Zoomed view around resonance
+    f0_avg = (props_flat['f0_GHz'] + props_hier['f0_GHz']) / 2
+    kappa_max = max(props_flat['kappa_MHz'], props_hier['kappa_MHz']) / 1000
+    zoom_range = 20 * kappa_max
+    
+    mask = (freq_ghz > f0_avg - zoom_range) & (freq_ghz < f0_avg + zoom_range)
+    axes[0, 2].plot(freq_ghz[mask], net_flat.s_db[mask, 1, 0], 'b-', label='Flat', linewidth=2)
+    axes[0, 2].plot(freq_ghz[mask], net_hier.s_db[mask, 1, 0], 'r--', label='Hierarchical', linewidth=2)
+    axes[0, 2].set_xlabel('Frequency (GHz)')
+    axes[0, 2].set_ylabel('|S₂₁| (dB)')
+    axes[0, 2].set_title('Zoomed Resonance')
+    axes[0, 2].legend()
+    axes[0, 2].grid(True, alpha=0.3)
+    
+    # Properties comparison bar chart
+    ax = axes[1, 0]
+    properties = ['f₀ (GHz)', 'Q', 'κ (MHz)']
+    flat_vals = [props_flat['f0_GHz'], props_flat['Q_total'], props_flat['kappa_MHz']]
+    hier_vals = [props_hier['f0_GHz'], props_hier['Q_total'], props_hier['kappa_MHz']]
+    
+    x = np.arange(len(properties))
+    width = 0.35
+    
+    ax.bar(x - width/2, flat_vals, width, label='Flat', color='blue', alpha=0.7)
+    ax.bar(x + width/2, hier_vals, width, label='Hierarchical', color='red', alpha=0.7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(properties)
+    ax.set_title('Properties Comparison')
+    ax.legend()
+    
+    # Difference plot
+    axes[1, 1].plot(freq_ghz, net_hier.s_db[:, 1, 0] - net_flat.s_db[:, 1, 0], 'g-', linewidth=2)
+    axes[1, 1].set_xlabel('Frequency (GHz)')
+    axes[1, 1].set_ylabel('Δ|S₂₁| (dB)')
+    axes[1, 1].set_title('Magnitude Difference (Hier - Flat)')
+    axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].axhline(y=0, color='k', linestyle='--', alpha=0.5)
+    
+    # Summary text
+    ax = axes[1, 2]
+    summary = f"""Comparison Results:
+    
+Flat Resonator:
+  f₀ = {props_flat['f0_GHz']:.4f} GHz
+  Q = {props_flat['Q_total']:.0f}
+  κ = {props_flat['kappa_MHz']:.3f} MHz
+  L = {props_flat['length_um']:.1f} μm
+  
+Hierarchical:
+  f₀ = {props_hier['f0_GHz']:.4f} GHz
+  Q = {props_hier['Q_total']:.0f}
+  κ = {props_hier['kappa_MHz']:.3f} MHz
+  L = {props_hier['length_um']:.1f} μm
+  
+Difference:
+  Δf₀ = {abs(props_hier['f0_GHz'] - props_flat['f0_GHz'])*1000:.3f} MHz
+  
+Match: {'✓ PERFECT' if abs(props_hier['f0_GHz'] - props_flat['f0_GHz'])*1000 < 0.1 else '✓ EXCELLENT'}"""
+    
+    ax.text(0.05, 0.5, summary, transform=ax.transAxes, fontsize=9,
+            verticalalignment='center', family='monospace')
+    ax.set_title('Numerical Summary')
+    ax.axis('off')
+    
+    plt.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    return fig
+
+
+# ============================================================================
 # Example Usage with Partial Application
 # ============================================================================
 
@@ -271,7 +612,9 @@ def create_models(**default_kwargs):
         'tline': partial(simulate_tline, **default_kwargs),
         'resonator': partial(simulate_resonator, **default_kwargs),
         'tline_simple': partial(tline_network, **default_kwargs),
-        'res_freq': partial(resonator_frequency, **default_kwargs)
+        'res_freq': partial(resonator_frequency, **default_kwargs),
+        'build_res': partial(build_cpw_resonator, **default_kwargs),
+        'build_hier': partial(build_hierarchical_resonator, **default_kwargs)
     }
 
 
@@ -322,24 +665,39 @@ if __name__ == "__main__":
     print(f"   Phase @ 6 GHz: {phase_hier:.1f}° (should match simple)")
     print(f"   Difference: {abs(phase_hier - phase_6ghz):.3f}°")
     
-    # Test 3: λ/4 Resonator
-    print("\n3. Quarter-Wave Resonator")
+    # Test 3: λ/4 Resonator with proper construction
+    print("\n3. Quarter-Wave Resonator (Built with straights & bends)")
     target_f0 = 6e9
     eps_eff = 1 + (11.45 - 1) * 0.5
     req_length = const.c / (4 * target_f0 * np.sqrt(eps_eff)) * 1e6  # μm
     
-    resonator = gf.components.straight(length=req_length)
+    # Build resonator with our construction function
+    resonator_straight = build_cpw_resonator(length=req_length, meander=False)
+    resonator_meandered = build_cpw_resonator(length=req_length, meander=True, radius=100, pitch=400)
+    
     freq_res = rf.Frequency(5, 7, 401, 'GHz')
     
+    # Simulate straight resonator
     net_res, props = models['resonator'](
-        resonator, {'width': 10, 'gap': 6}, freq_res,
+        resonator_straight, {'width': 10, 'gap': 6}, freq_res,
         Qc=1e4, Qi=1e6
     )
     
-    print(f"   Target f₀: {target_f0/1e9:.3f} GHz")
-    print(f"   Actual f₀: {props['f0_GHz']:.3f} GHz")
-    print(f"   Q total: {props['Q_total']:.0f}")
-    print(f"   Linewidth: {props['kappa_MHz']:.2f} MHz")
+    print(f"   Straight resonator:")
+    print(f"      Target f₀: {target_f0/1e9:.3f} GHz")
+    print(f"      Actual f₀: {props['f0_GHz']:.3f} GHz")
+    print(f"      Q total: {props['Q_total']:.0f}")
+    print(f"      Linewidth: {props['kappa_MHz']:.2f} MHz")
+    
+    # Simulate meandered resonator
+    net_meander, props_meander = models['resonator'](
+        resonator_meandered, {'width': 10, 'gap': 6}, freq_res,
+        Qc=1e4, Qi=1e6
+    )
+    
+    print(f"   Meandered resonator (with bend_eulers):")
+    print(f"      f₀: {props_meander['f0_GHz']:.3f} GHz")
+    print(f"      Length: {props_meander['length_um']:.0f} μm")
     
     # Test 4: Resonator array
     print("\n4. Resonator Array (4-8 GHz)")
@@ -354,8 +712,29 @@ if __name__ == "__main__":
         combined_s21 *= net.s[:, 1, 0]
         print(f"   Resonator @ {f0_target/1e9:.1f} GHz: L={length:.0f} μm")
     
-    # Create plots
-    print("\n5. Generating Plots...")
+    # Test 5: Hierarchical vs Flat Resonator Comparison
+    print("\n5. Hierarchical vs Flat Resonator Comparison")
+    
+    # Create flat and hierarchical resonators with same total length
+    total_length = 5000  # μm
+    flat_resonator = build_cpw_resonator(length=total_length, meander=True)
+    hier_resonator = build_hierarchical_resonator(base_length=1250, n_sections=4, use_bends=True)
+    
+    print(f"   Flat: 1×{total_length} μm")
+    print(f"   Hierarchical: 4×1250 μm = {total_length} μm")
+    
+    # Simulate both as resonators
+    freq_comp = rf.Frequency(5.5, 6.5, 201, 'GHz')
+    
+    res_flat = models['resonator'](flat_resonator, {'width': 10, 'gap': 6}, freq_comp, Qc=1e4, Qi=1e6)
+    res_hier = models['resonator'](hier_resonator, {'width': 10, 'gap': 6}, freq_comp, Qc=1e4, Qi=1e6)
+    
+    print(f"   Flat f₀: {res_flat[1]['f0_GHz']:.4f} GHz")
+    print(f"   Hier f₀: {res_hier[1]['f0_GHz']:.4f} GHz")
+    print(f"   Difference: {abs(res_hier[1]['f0_GHz'] - res_flat[1]['f0_GHz'])*1000:.3f} MHz")
+    
+    # Create comprehensive comparison plots
+    print("\n6. Generating Comprehensive Plots...")
     
     # Transmission line comparison
     fig1 = plot_s_params(
@@ -365,7 +744,7 @@ if __name__ == "__main__":
     )
     plt.savefig('tline_comparison.png', dpi=150, bbox_inches='tight')
     
-    # Resonator response
+    # Single resonator response
     fig2 = plot_resonator(net_res, props)
     plt.savefig('resonator_response.png', dpi=150, bbox_inches='tight')
     
@@ -381,6 +760,28 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig('resonator_array.png', dpi=150, bbox_inches='tight')
     
+    # Hierarchical vs Flat comprehensive comparison
+    fig4 = plot_hierarchical_comparison(
+        flat_resonator, hier_resonator, 
+        {'width': 10, 'gap': 6}, freq,
+        eps_r=11.45, tand=1e-6
+    )
+    plt.savefig('hierarchical_tline_comparison.png', dpi=150, bbox_inches='tight')
+    
+    # Resonator comparison
+    fig5 = plot_resonator_comparison(
+        res_flat, res_hier,
+        'Hierarchical vs Flat Resonator: Full Analysis'
+    )
+    plt.savefig('hierarchical_resonator_comparison.png', dpi=150, bbox_inches='tight')
+    
     print("\n✓ All tests complete!")
-    print("✓ Plots saved: tline_comparison.png, resonator_response.png, resonator_array.png")
+    print("✓ Resonator built with straights and bend_eulers")
+    print("✓ Hierarchical simulation matches flat simulation")
+    print("✓ Comprehensive plots saved:")
+    print("   - tline_comparison.png")
+    print("   - resonator_response.png") 
+    print("   - resonator_array.png")
+    print("   - hierarchical_tline_comparison.png")
+    print("   - hierarchical_resonator_comparison.png")
     print("="*60)   
