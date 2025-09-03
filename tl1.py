@@ -3,10 +3,13 @@
 import skrf as rf
 from skrf.media import MLine, CPW, DefinedGammaZ0
 import gdsfactory as gf
-from typing import Union, Optional
+from typing import Union
+from async_lru import alru_cache
+import asyncio
 
 
-def to_skrf(
+@alru_cache
+async def to_skrf(
     component: gf.Component,
     cross_section: gf.CrossSection,
     freq: rf.Frequency,
@@ -40,12 +43,15 @@ def to_skrf(
     
     # Determine line type from cross-section
     if hasattr(cross_section, 'gap') and cross_section.gap:
-        return _make_cpw(width, cross_section.gap * 1e-6, length, freq, **kwargs)
+        network = await _make_cpw(width, cross_section.gap * 1e-6, length, freq, **kwargs)
     else:
-        return _make_microstrip(width, length, freq, **kwargs)
+        network = await _make_microstrip(width, length, freq, **kwargs)
+    
+    return network
 
 
-def _make_microstrip(
+@alru_cache
+async def _make_microstrip(
     width: float,
     length: float, 
     freq: rf.Frequency,
@@ -57,20 +63,24 @@ def _make_microstrip(
     **kwargs
 ) -> rf.Network:
     """Create microstrip Network."""
-    media = MLine(
-        frequency=freq,
-        w=width,
-        h=height,
-        t=thickness,
-        ep_r=eps_r,
-        rho=rho,
-        tand=tand,
-        **kwargs
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: MLine(
+            frequency=freq,
+            w=width,
+            h=height,
+            t=thickness,
+            ep_r=eps_r,
+            rho=rho,
+            tand=tand,
+            **kwargs
+        ).line(length, unit='m')
     )
-    return media.line(length, unit='m')
 
 
-def _make_cpw(
+@alru_cache
+async def _make_cpw(
     width: float,
     gap: float,
     length: float,
@@ -84,22 +94,26 @@ def _make_cpw(
     **kwargs
 ) -> rf.Network:
     """Create CPW Network."""
-    media = CPW(
-        frequency=freq,
-        w=width,
-        s=gap,
-        h=height,
-        t=thickness,
-        ep_r=eps_r,
-        rho=rho,
-        tand=tand,
-        has_metal_backside=grounded,
-        **kwargs
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: CPW(
+            frequency=freq,
+            w=width,
+            s=gap,
+            h=height,
+            t=thickness,
+            ep_r=eps_r,
+            rho=rho,
+            tand=tand,
+            has_metal_backside=grounded,
+            **kwargs
+        ).line(length, unit='m')
     )
-    return media.line(length, unit='m')
 
 
-def from_em_sim(
+@alru_cache
+async def from_em_sim(
     component: gf.Component,
     z0: Union[float, complex],
     gamma: Union[float, complex],
@@ -127,21 +141,25 @@ def from_em_sim(
     bbox = component.bbox()
     length = (bbox[1][0] - bbox[0][0]) * 1e-6
     
-    media = DefinedGammaZ0(frequency=freq, z0=z0, gamma=gamma)
-    return media.line(length, unit='m')
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: DefinedGammaZ0(frequency=freq, z0=z0, gamma=gamma).line(length, unit='m')
+    )
 
 
 # Example usage
-if __name__ == "__main__":
-    # Create frequency range
+async def main():
+    """Example async usage."""
     freq = rf.Frequency(1, 40, 201, 'GHz')
+    c = gf.components.straight(length=1000)
+    xs = gf.cross_section.strip(width=10)
     
-    # Create gdsfactory component and cross-section
-    c = gf.components.straight(length=1000)  # 1mm
-    xs = gf.cross_section.strip(width=10)    # 10um
-    
-    # Convert to RF network
-    network = to_skrf(c, xs, freq, eps_r=11.9, height=200e-6)
+    network = await to_skrf(c, xs, freq, eps_r=11.9, height=200e-6)
     
     print(f"Z0: {network.z0[0,0]:.1f} Ω")
     print(f"S21 @ 20GHz: {abs(network.s[100,1,0]):.3f}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
