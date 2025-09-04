@@ -2,6 +2,7 @@ import numpy as np
 import skrf as rf
 from skrf.media.distributedCircuit import DistributedCircuit
 from mpmath import ellipk
+import matplotlib.pyplot as plt
 
 def cpw_media(freqs, width, gap, thickness, h_sub,
               eps_r, tan_delta=0.0, metal='PEC'):
@@ -35,67 +36,54 @@ def cpw_media(freqs, width, gap, thickness, h_sub,
     )
     return dc
 
+def cpw_line(freqs, length, **kwargs):
+    dc = cpw_media(freqs, **kwargs)
+    return dc.line(length, unit='m')
 
-def cpw_quarter_wave_resonator(freqs, target_freq, width, gap, thickness, h_sub,
-                               eps_r, tan_delta=0.0, Q_loaded=5000):
+def cpw_bend(freqs, radius, angle_deg, **kwargs):
+    arc_length = (np.pi * radius * angle_deg) / 180.0
+    return cpw_line(freqs, arc_length, **kwargs)
+
+def cpw_quarterwave_stub(freqs, target_freq, **kwargs):
     """
-    One-port quarter-wave CPW resonator terminated in a short,
-    with finite Q so that S11 shows a dip.
-
-    Parameters
-    ----------
-    freqs : array
-        Frequency sweep [Hz].
-    target_freq : float
-        Desired resonance frequency [Hz] (fundamental).
-    width, gap, thickness, h_sub, eps_r, tan_delta : geometry and material.
-    Q_loaded : float
-        Loaded quality factor to set resonance linewidth.
-
-    Returns
-    -------
-    skrf.Network
+    Quarter-wave CPW stub resonator (1-port).
     """
+    dc = cpw_media(freqs, **kwargs)
+    eps_eff = (kwargs["eps_r"] + 1)/2
+    vp = 3e8 / np.sqrt(eps_eff)
+    L_qw = vp / (4 * target_freq)
+    return dc.line(L_qw, unit="m") ** dc.short()
 
-    # Build media
-    dc = cpw_media(freqs, width, gap, thickness, h_sub, eps_r, tan_delta)
-
-    # Effective permittivity -> phase velocity
-    eps_eff = (eps_r + 1)/2
-    v_p = 3e8 / np.sqrt(eps_eff)
-
-    # Quarter-wave length for target frequency
-    L_qw = v_p / (4 * target_freq)
-
-    # Line terminated in short
-    short = dc.short()
-    ideal_res = dc.line(L_qw, unit='m') ** short
-
-    # Add loaded Q (simple notch filter model)
-    s11 = ideal_res.s[:,0,0]
-    f0 = target_freq
-    df = f0 / Q_loaded
-    lorentz = 1 - (df / (1j*(freqs - f0) + df))
-    s11_with_Q = s11 * lorentz
-
-    # Wrap back into a Network
-    ntw = rf.Network(frequency=dc.frequency, s=s11_with_Q[:,None,None])
-    return ntw
-
+def chain_cpw(components):
+    net = components[0]
+    for nxt in components[1:]:
+        net = rf.cascade(net, nxt)
+    return net
 
 freqs = np.linspace(1e9, 10e9, 2001)
+params = dict(width=10e-6, gap=6e-6, thickness=0.2e-6,
+              h_sub=500e-6, eps_r=11.45, tan_delta=1e-6, metal='PEC')
 
-res = cpw_quarter_wave_resonator(freqs,
-                                 target_freq=5e9,
-                                 width=10e-6, gap=6e-6, thickness=0.2e-6,
-                                 h_sub=500e-6, eps_r=11.45,
-                                 tan_delta=1e-6, Q_loaded=10000)
+# Media
+dc = cpw_media(freqs, **params)
 
-import matplotlib.pyplot as plt
-res.plot_s_db(m=0, n=0)
-# res.plot_s_db(m=0, n=1)
+# Feedline: straight + bend + straight
+feedline = chain_cpw([
+    cpw_line(freqs, length=200e-6, **params),
+    cpw_bend(freqs, radius=50e-6, angle_deg=90, **params),
+    cpw_line(freqs, length=200e-6, **params)
+])
+
+# Quarter-wave resonator stub
+stub = cpw_quarterwave_stub(freqs, target_freq=5e9, **params)
+
+# Couple stub to feedline (hanger resonator geometry)
+# Port mapping: connect stub port 0 to feedline node
+full_net = rf.connect(feedline, 1, stub, 0)
+
+full_net.plot_s_db()
 plt.show()
 
-res.plot_s_deg(m=0, n=0)
-# res.plot_s_deg(m=0, n=1)
+full_net.plot_s_deg()
 plt.show()
+
